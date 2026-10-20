@@ -1,6 +1,6 @@
+﻿<# : batch script
 @echo off
-chcp 65001 >nul
-title 小米AX3000T(高通版)一键SSH与固化工具
+setlocal
 cd /d "%~dp0"
 
 :: 检查是否具备管理员权限
@@ -19,18 +19,17 @@ if %errorlevel% neq 0 (
     echo   3. 解锁完成后，脚本会自动注销并删除该规则，不留任何安全残留。
     echo.
     echo ★ 您可以自主选择：
-    echo   [直接按回车]：弹出授权窗口，点击【是】（推荐，全自动免配置）
-    echo   [输入 N 回车]：不给管理员权限，以普通权限继续（需手动点击防火墙允许）
+    echo   - 直接按回车：弹出授权窗口，点击【是】（推荐，全自动免配置）
+    echo   - 输入 N 回车：不给管理员权限，以普通权限继续（需手动点击防火墙允许）
     echo.
     echo ======================================================================
-    set /p user_choice=请选择 [按回车继续授权 / 输入 N 放弃]: 
-    if /i "%user_choice%"=="N" (
-        goto :run_normal
-    )
+    set "user_choice="
+    set /p "user_choice=请选择 [按回车继续授权 / 输入 N 放弃]: "
+    if /i "%user_choice%"=="N" goto :run_normal
     
     echo.
     echo 正在调起 Windows 授权弹窗，请在随后的窗口中点击【是】...
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd.exe -ArgumentList '/c \"\"%~f0\"\"' -Verb RunAs"
     exit /b
 )
 
@@ -43,12 +42,13 @@ echo.
 
 :: 检查管理员权限状态并配置防火墙
 net session >nul 2>&1
-if %errorlevel% == 0 (
+if %errorlevel%==0 (
     echo [安全保护] 已获得管理员授权，正在临时配置防火墙放行规则 (端口 8123)...
     netsh advfirewall firewall delete rule name="AX3000T_Unlock_Port" >nul 2>&1
     netsh advfirewall firewall add rule name="AX3000T_Unlock_Port" dir=in action=allow protocol=TCP localport=8123 >nul 2>&1
     echo [安全保护] 端口临时规则配置完毕，运行结束后将自动清理。
-) else (
+)
+if %errorlevel% neq 0 (
     echo [运行模式] 当前以普通用户权限运行。
     echo 【重要提示】若运行中弹出 "Windows 安全警报"：
     echo 务必【勾选公用网络】并点击【允许访问】，否则路由器无法下载固化脚本！
@@ -59,7 +59,7 @@ echo 正在检查 Python 运行环境...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
-    echo 【错误】未检测到 Python 运行环境！
+    echo [错误] 未检测到 Python 运行环境！
     echo 请打开 Win11 微软应用商店 (Microsoft Store) 搜索并安装 "Python 3.11" 或 "3.12"。
     echo 安装完成后重新运行本脚本即可。
     echo.
@@ -74,10 +74,11 @@ echo.
 
 :: 运行完毕后清理临时防火墙规则
 net session >nul 2>&1
-if %errorlevel% == 0 (
+if %errorlevel%==0 (
     echo [安全保护] 正在清理临时防火墙规则...
     netsh advfirewall firewall delete rule name="AX3000T_Unlock_Port" >nul 2>&1
     echo [安全保护] 临时规则清理完成，系统网络已恢复原状。
 )
 
 pause
+#>
