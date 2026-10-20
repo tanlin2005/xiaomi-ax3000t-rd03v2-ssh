@@ -5,7 +5,7 @@
 - 100% 采用 Python 原生标准库，无需 pip 安装任何第三方模块
 - 单文件自包含漏洞利用与握手，无需 git clone 任何仓库
 - 支持功能：
-    [1] 开启 SSH 并永久固化 (支持自定义 root 密码、普通路由与中继 AP 双模式)
+    [1] 开启 SSH 并永久固化 (支持自定义 root 密码，自动双模自愈，适配主路由与中继模式)
     [2] 撤销 Root 权限并完全关闭 SSH (清理固化与自启，无痕恢复出厂)
 """
 
@@ -214,8 +214,12 @@ def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
         raise RuntimeError(f"换取管理 token 失败: {res}")
     return stok
 
-# ---- 远程自愈与深度固化 Shell 构造 ----
+# ---- 远程通用自愈与全能固化 Shell 构造 ----
 def build_remote_sh(root_password):
+    """
+    通用固化脚本：
+    无论是作为主路由器还是切换为中继 AP，脚本自动包含全套防覆盖与自愈逻辑，无需用户预先纠结选择
+    """
     safe_pwd = root_password.replace("'", "'\\''")
     return f"""#!/bin/sh
 
@@ -249,7 +253,7 @@ if [ -z "$(pidof dropbear)" ]; then
     /etc/init.d/dropbear restart 2>/dev/null
 fi
 
-# 中继模式自愈：如果工作模式切换清空了防火墙自启，自动补齐
+# 全自动自愈：无论是主路由还是切换到中继 AP，只要防火墙规则被官方重置，立即自动重挂
 if ! uci -q get firewall.auto_ssh >/dev/null; then
     uci set firewall.auto_ssh=include
     uci set firewall.auto_ssh.type='script'
@@ -377,7 +381,6 @@ def execute_remote_payload(host, local_ip, payload_content):
     print("\n[+] 步骤 3/4: 提取管理凭据并触发漏洞注入...")
     stok = leak_admin_stok(host)
 
-    # 读取当前 WiFi SSID，保持原有名称不破坏系统结构
     ssid24, ssid5 = "MiWiFi", "MiWiFi"
     try:
         w_info = http_json(f"http://{host}/cgi-bin/luci/;stok={stok}/api/xqnetwork/wifi_detail_all")
@@ -417,15 +420,13 @@ def do_unlock(host, local_ip):
         root_pwd = "admin"
     print(f"[*] 已设置 root 密码为: {root_pwd}")
 
-    print("\n【选择路由器工作模式】")
-    print("  [1] 普通路由模式 (当主路由使用)")
-    print("  [2] 中继模式 (当有线 AP / 桥接 / 无线中继使用)")
-    choice = input("请选择工作模式 [1 或 2，回车默认 1]: ").strip()
-    is_relay = (choice == "2")
-
+    # 步骤 1: 准备出厂环境
     init_factory_cap(host)
+
+    # 步骤 2 & 3: 注入全能双模自愈固化脚本
     execute_remote_payload(host, local_ip, build_remote_sh(root_pwd))
 
+    # 步骤 4: 验证 SSH 状态
     print("\n[+] 步骤 4/4: 检查 SSH 服务状态...")
     time.sleep(4)
     if port_open(host, 22):
@@ -435,10 +436,14 @@ def do_unlock(host, local_ip):
         print(f"  SSH 登录密码: {root_pwd}")
         print(f"  命令行连接:   ssh root@{host}")
         print("=" * 68)
-        print("\n[+] 提示：此时无需手动重启路由器，建议先在终端执行 `ssh root@192.168.31.1` 验证登录！")
-        print("    ★ 随后您可以打开浏览器访问 http://192.168.31.1 进入后台正常修改 WiFi 名称和密码。")
-        print("    ★ 如果设置了【中继模式】：切换后路由器 IP 会变为主路由分配的新 IP，")
-        print("       请去主路由器后台查看新 IP，并使用新 IP 登录 SSH。")
+        print("\n[+] 验证与后续使用说明：")
+        print("    1. 【验证】此时 SSH 服务已经在后台正常运行，建议先在终端执行：")
+        print(f"       ssh root@{host}   (验证登录无误)")
+        print("    2. 【配置向导】随后打开浏览器访问 http://192.168.31.1 ，按您的需求正常配置：")
+        print("       - 当作主路由器：正常设置宽带账号和您自己的私人 WiFi 密码。")
+        print("       - 当作中继/AP：在向导中选择【中继模式】(有线或无线均可)。")
+        print("    3. 【特别提醒】：若设置了中继模式，路由器 IP 会变为主路由分配的新 IP，")
+        print("       后续请使用新 IP 登录 SSH（固化脚本会自动巡视并确保 SSH 常驻）。")
     else:
         print(f"[!] 端口 22 尚未响应，请等待数秒后在终端执行: ssh root@{host}")
 
@@ -490,7 +495,7 @@ def main():
     print(f"[*] 目标路由器默认 IP: {host}")
 
     print("\n请选择您要执行的操作：")
-    print("  [1] 开启 SSH 并永久固化 (获取 Root 权限，开机自启)")
+    print("  [1] 开启 SSH 并永久固化 (获取 Root 权限，自动双模适配常驻)")
     print("  [2] 撤销 Root 权限并彻底关闭 SSH (清理固化与自启，无痕恢复出厂)")
     action = input("\n请输入数字 [1 或 2，回车默认 1]: ").strip()
     if not action:
