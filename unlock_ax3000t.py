@@ -216,15 +216,13 @@ def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
 
 # ---- 远程通用自愈与全能固化 Shell 构造 ----
 def build_remote_sh(root_password):
-    """
-    通用固化脚本：
-    无论是作为主路由器还是切换为中继 AP，脚本自动包含全套防覆盖与自愈逻辑，无需用户预先纠结选择
-    """
     safe_pwd = root_password.replace("'", "'\\''")
     return f"""#!/bin/sh
 
-# 1. 设置 root 密码
-(echo '{safe_pwd}'; sleep 1; echo '{safe_pwd}') | passwd root
+# 1. 采用三重方式确保 root 密码设置成功
+echo -e '{safe_pwd}\\n{safe_pwd}' | passwd root 2>/dev/null
+(echo '{safe_pwd}'; sleep 1; echo '{safe_pwd}') | passwd root 2>/dev/null
+echo 'root:{safe_pwd}' | chpasswd 2>/dev/null
 
 # 2. 写入 NVRAM 和 BDATA 环境变量
 nvram set ssh_en=1
@@ -241,6 +239,9 @@ cat << 'EOF' > /data/auto_ssh/auto_ssh.sh
 #!/bin/sh
 # 确保 NVRAM 标记
 [ "$(nvram get ssh_en)" = 0 ] && nvram set ssh_en=1 && nvram commit
+
+# 确保 root 密码不被系统初始化冲掉
+echo -e '{safe_pwd}\\n{safe_pwd}' | passwd root 2>/dev/null
 
 # 关键：修补官方 dropbear 启动脚本，解除 release 稳定版对 SSH 的硬编码限制
 if [ -f /etc/init.d/dropbear ]; then
@@ -432,18 +433,15 @@ def do_unlock(host, local_ip):
     if port_open(host, 22):
         print("\n" + "=" * 68)
         print("  🎉 恭喜！SSH 已经成功开启并完成永久固化！")
-        print(f"  SSH 登录账号: root")
-        print(f"  SSH 登录密码: {root_pwd}")
-        print(f"  命令行连接:   ssh root@{host}")
+        print(f"  ★ SSH 登录账号: root")
+        print(f"  ★ SSH 登录密码: {root_pwd}")
+        print(f"  ★ 命令行连接:   ssh root@{host}")
         print("=" * 68)
-        print("\n[+] 验证与后续使用说明：")
-        print("    1. 【验证】此时 SSH 服务已经在后台正常运行，建议先在终端执行：")
-        print(f"       ssh root@{host}   (验证登录无误)")
-        print("    2. 【配置向导】随后打开浏览器访问 http://192.168.31.1 ，按您的需求正常配置：")
-        print("       - 当作主路由器：正常设置宽带账号和您自己的私人 WiFi 密码。")
-        print("       - 当作中继/AP：在向导中选择【中继模式】(有线或无线均可)。")
-        print("    3. 【特别提醒】：若设置了中继模式，路由器 IP 会变为主路由分配的新 IP，")
-        print("       后续请使用新 IP 登录 SSH（固化脚本会自动巡视并确保 SSH 常驻）。")
+        print("\n[+] 密码概念说明与后续操作：")
+        print(f"    1. 【SSH 终端密码】：为您刚才设置的 `{root_pwd}`，用于 SSH 命令行登录。")
+        print("    2. 【网页管理密码】：是小米路由器网页后台独立使用的密码，出厂默认是 `admin`；")
+        print("       您随后可在网页后台设置向导中，自由将其修改为您想要的管理员密码。")
+        print(f"    3. 【验证】：请在当前 PowerShell 窗口直接执行 `ssh root@{host}` 体验 Root 权限！")
     else:
         print(f"[!] 端口 22 尚未响应，请等待数秒后在终端执行: ssh root@{host}")
 
