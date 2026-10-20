@@ -427,10 +427,18 @@ def do_unlock(host, local_ip):
     # 步骤 2 & 3: 注入全能双模自愈固化脚本
     execute_remote_payload(host, local_ip, build_remote_sh(root_pwd))
 
-    # 步骤 4: 验证 SSH 状态
-    print("\n[+] 步骤 4/4: 检查 SSH 服务状态...")
-    time.sleep(4)
-    if port_open(host, 22):
+    # 步骤 4: 循环探测验证 SSH 状态 (给路由器启动 Dropbear 留出充足时间)
+    print("\n[+] 步骤 4/4: 检查 SSH 服务就绪状态 (最多等待 25 秒)...")
+    ssh_ready = False
+    for i in range(12):
+        if port_open(host, 22):
+            ssh_ready = True
+            break
+        print(".", end="", flush=True)
+        time.sleep(2)
+    print()
+
+    if ssh_ready:
         print("\n" + "=" * 68)
         print("  🎉 恭喜！SSH 已经成功开启并完成永久固化！")
         print(f"  ★ SSH 登录账号: root")
