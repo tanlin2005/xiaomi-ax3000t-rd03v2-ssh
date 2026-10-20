@@ -454,7 +454,16 @@ def do_unlock(host, local_ip):
         print("       (在网页端修改 WiFi 或管理员密码，后台 Root/SSH 权限均会永久保留)")
         print(f"    4. 【立即验证】：建议直接在当前终端执行 `ssh root@{host}` 体验 Root 权限！")
     else:
-        print(f"[!] 端口 22 尚未响应，请等待数秒后在终端执行: ssh root@{host}")
+        print("\n" + "=" * 68)
+        print("  【提示】25 秒内未直接探测到 22 端口，可能存在以下情况：")
+        print("=" * 68)
+        print("  情况 A (最常见)：后台守护进程仍在收尾，实际上脚本已成功写入。")
+        print(f"         请直接在终端尝试手动连接: ssh root@{host}")
+        print(f"         (如果连上并输入密码 `{root_pwd}` 成功，说明其实已经解锁！)")
+        print("  情况 B：路由器内部 Mesh 触发中断或网络未握手完成。")
+        print("         若手动连接仍超时，请断电重启路由器等待 1 分钟后再次尝试连接；")
+        print("         若仍未开启，请长按 Reset 键 8 秒恢复出厂重新执行一次本脚本。")
+        print("=" * 68)
 
 def do_revert(host, local_ip):
     print("\n" + "=" * 68)
