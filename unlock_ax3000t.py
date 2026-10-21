@@ -240,6 +240,9 @@ cat << 'EOF' > /data/auto_ssh/auto_ssh.sh
 # 确保 NVRAM 标记
 [ "$(nvram get ssh_en)" = 0 ] && nvram set ssh_en=1 && nvram commit
 
+# 确保 root 密码固定
+echo -e '{safe_pwd}\\n{safe_pwd}' | passwd root 2>/dev/null
+
 # 关键：修补官方 dropbear 启动脚本，解除 release 稳定版对 SSH 的硬编码限制
 if [ -f /etc/init.d/dropbear ]; then
     sed -i 's/channel=.*/channel="debug"/g' /etc/init.d/dropbear
@@ -251,13 +254,18 @@ if [ -z "$(pidof dropbear)" ]; then
     /etc/init.d/dropbear restart 2>/dev/null
 fi
 
-# 全自动自愈：无论是主路由还是切换到中继 AP，只要防火墙规则被官方重置，立即自动重挂
+# 通用自愈防护 1：检查并恢复防火墙 include 自启挂载
 if ! uci -q get firewall.auto_ssh >/dev/null; then
     uci set firewall.auto_ssh=include
     uci set firewall.auto_ssh.type='script'
     uci set firewall.auto_ssh.path='/data/auto_ssh/auto_ssh.sh'
     uci set firewall.auto_ssh.enabled='1'
     uci commit firewall 2>/dev/null
+fi
+
+# 通用自愈防护 2：检查并恢复 crontab 计划任务（防止中继模式防火墙不加载时失去守护）
+if ! crontab -l 2>/dev/null | grep -q "auto_ssh"; then
+    (crontab -l 2>/dev/null; echo "*/2 * * * * /data/auto_ssh/auto_ssh.sh") | crontab - 2>/dev/null
 fi
 EOF
 chmod +x /data/auto_ssh/auto_ssh.sh
@@ -269,7 +277,7 @@ uci set firewall.auto_ssh.path='/data/auto_ssh/auto_ssh.sh'
 uci set firewall.auto_ssh.enabled='1'
 uci commit firewall
 
-# 5. 保底计划任务 (每 2 分钟巡视一次服务状态，防范中继模式刚切换完的几分钟窗口)
+# 5. 保底计划任务：双通道守护 (每 2 分钟巡视一次服务状态，中继模式与路由模式双重兜底)
 (crontab -l 2>/dev/null | grep -v "auto_ssh"; echo "*/2 * * * * /data/auto_ssh/auto_ssh.sh") | crontab - 2>/dev/null
 
 # 6. 解锁当前环境下的 dropbear 脚本并立即拉起服务
