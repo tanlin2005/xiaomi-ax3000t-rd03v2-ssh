@@ -240,9 +240,6 @@ cat << 'EOF' > /data/auto_ssh/auto_ssh.sh
 # 确保 NVRAM 标记
 [ "$(nvram get ssh_en)" = 0 ] && nvram set ssh_en=1 && nvram commit
 
-# 确保 root 密码不被系统初始化冲掉
-echo -e '{safe_pwd}\\n{safe_pwd}' | passwd root 2>/dev/null
-
 # 关键：修补官方 dropbear 启动脚本，解除 release 稳定版对 SSH 的硬编码限制
 if [ -f /etc/init.d/dropbear ]; then
     sed -i 's/channel=.*/channel="debug"/g' /etc/init.d/dropbear

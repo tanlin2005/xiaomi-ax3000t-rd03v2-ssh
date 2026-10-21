@@ -47,6 +47,7 @@ xiaomi-ax3000t-rd03v2-ssh/
 ├── 一键开启SSH与固化.ps1  # Win11 PowerShell 原生入口 (推荐，无字符集乱码，支持管理员自提)
 ├── 一键开启SSH与固化.bat  # 传统 CMD 双击入口 (带 UTF-8 BOM 修复)
 ├── unlock_ax3000t.py      # 核心 Python 脚本 (全功能工具箱：解锁、固化、撤销与还原)
+├── calc_sn_pwd.py         # 路由器出厂默认 root 密码计算工具 (输入 SN 即可算出默认密码)
 └── README.md              # 项目详细说明文档
 ```
 
