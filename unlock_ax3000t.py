@@ -22,6 +22,7 @@ import random
 import struct
 import re
 import threading
+import subprocess
 import http.server
 import urllib.request
 import urllib.parse
@@ -333,7 +334,7 @@ uci commit firewall 2>/dev/null
 # 5. 清理 crontab 定时任务
 (crontab -l 2>/dev/null | grep -v "auto_ssh") | crontab - 2>/dev/null
 
-# 6. 还原 dropbear 脚本
+# 6. 还原 dropbear 脚本为 release 状态
 [ -f /etc/init.d/dropbear ] && sed -i 's/channel="debug"/channel="release"/g' /etc/init.d/dropbear
 
 # 7. 锁定 root 用户密码（恢复出厂禁用直接登录状态）
@@ -469,16 +470,21 @@ def do_unlock(host, local_ip):
         print("         若仍未开启，请长按 Reset 键 8 秒恢复出厂重新执行一次本脚本。")
         print("=" * 68)
 
-def do_revert(host, local_ip):
+def do_revert(host):
     print("\n" + "=" * 68)
     print("           【撤销 Root 权限与关闭 SSH 服务向导】")
     print("=" * 68)
-    print("本操作将对路由器执行以下清理（完全无痕还原出厂状态）：")
-    print("  1. 彻底停止 dropbear (SSH) 及 telnetd 进程，关闭 22 端口。")
-    print("  2. 将 NVRAM 与 BDATA 中的 ssh_en/telnet_en/uart_en 标志恢复为 0。")
-    print("  3. 完全删除 /data/auto_ssh 持久化目录与脚本。")
-    print("  4. 从系统防火墙中移除自启脚本挂载，并清理计划任务。")
-    print("  5. 锁定 root 用户密码，恢复为原厂禁用直接登录状态。")
+    print("★ 运行环境要求：")
+    print("  1. 路由器当前处于正常开机运行状态（电脑已连上其 LAN 口或 WiFi）；")
+    print(f"  2. 目标路由器当前 IP: {host} (若为中继模式请确保 IP 正确)；")
+    print("  3. 路由器当前的 SSH 端口 (22) 为开启状态。")
+    print("=" * 68)
+    print("\n本操作将对路由器执行以下无痕清理：")
+    print("  1. 立即停止并禁用 dropbear (SSH) 与 telnetd 进程，关闭 22 端口；")
+    print("  2. 将 NVRAM 与 BDATA 中的 ssh_en/telnet_en/uart_en 标志恢复为 0；")
+    print("  3. 彻底删除 /data/auto_ssh 持久化目录与守护脚本；")
+    print("  4. 从系统防火墙中移除自启挂载，并清空巡视计划任务；")
+    print("  5. 还原 dropbear 官方限制并锁定 root 密码（禁止直接登录）。")
     print("=" * 68)
 
     confirm = input("\n请确认是否要彻底撤销 Root 并关闭 SSH？[输入 YES 确认，按其他键取消]: ").strip()
@@ -486,14 +492,36 @@ def do_revert(host, local_ip):
         print("[*] 操作已取消。")
         return
 
-    if port_open(host, MESH_PORT):
-        print("\n[*] 检测到 Mesh 端口开放，正在通过底层通道下发撤销与清理载荷...")
-        execute_remote_payload(host, local_ip, build_revert_sh())
-    else:
-        print("\n[*] 正在唤醒底层管理通道以执行无痕清理...")
-        init_factory_cap(host)
-        execute_remote_payload(host, local_ip, build_revert_sh())
+    # 1. 检查 SSH 连通性
+    if not port_open(host, 22):
+        print(f"\n[-] 错误：目标路由器 {host} 的 22 端口未响应！")
+        print("    若路由器已处于中继模式，其 IP 会变为主路由分配的 IP。")
+        print("    请重新启动脚本并在输入目标 IP 时指定其真实 IP。")
+        return
 
+    # 2. 执行撤销清理 Shell 指令
+    clean_cmds = (
+        "nvram set ssh_en=0; nvram set telnet_en=0; nvram set uart_en=0; nvram set boot_wait=off; nvram commit; "
+        "bdata set ssh_en=0 2>/dev/null; bdata commit 2>/dev/null; "
+        "rm -rf /data/auto_ssh; "
+        "uci -q delete firewall.auto_ssh; uci commit firewall 2>/dev/null; "
+        "(crontab -l 2>/dev/null | grep -v 'auto_ssh') | crontab - 2>/dev/null; "
+        "[ -f /etc/init.d/dropbear ] && sed -i 's/channel=\"debug\"/channel=\"release\"/g' /etc/init.d/dropbear; "
+        "passwd -l root 2>/dev/null; "
+        "/etc/init.d/dropbear stop 2>/dev/null; /etc/init.d/dropbear disable 2>/dev/null; killall -9 dropbear 2>/dev/null"
+    )
+
+    print(f"\n[*] 正在通过 SSH 连接到 root@{host} 执行清理...")
+    print("    【提示】随后的 SSH 连接窗口若提示密码，请输入您之前设置的 root 密码！")
+    print("    正在调起连接并下发清理指令...\n")
+
+    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL", f"root@{host}", clean_cmds]
+    try:
+        ret = subprocess.run(cmd)
+    except Exception as e:
+        print(f"[-] 执行 SSH 命令出错: {e}")
+
+    # 3. 验证端口关闭结果
     time.sleep(3)
     print("\n[+] 正在验证清理结果...")
     if not port_open(host, 22):
@@ -503,7 +531,11 @@ def do_revert(host, local_ip):
         print("  ✔ root 用户已被锁定，路由器已完全恢复为出厂纯净状态！")
         print("=" * 68)
     else:
-        print("[!] 提示：端口 22 仍在响应，可能正在关闭中，建议断电重启路由器以完成最终生效。")
+        print("=" * 68)
+        print("  [!] 提示：端口 22 仍在监听，可能是密码未输入正确导致命令未执行，")
+        print(f"      您可以手动登录终端 `ssh root@{host}` 运行以下命令完成清理：")
+        print("      rm -rf /data/auto_ssh && nvram set ssh_en=0 && nvram commit && /etc/init.d/dropbear stop")
+        print("=" * 68)
 
 def main():
     print("=" * 68)
@@ -511,22 +543,25 @@ def main():
     print("         (纯 Python 原生标准库实现 · 免装模块 · 免克隆代码)")
     print("=" * 68)
 
-    host = "192.168.31.1"
-    local_ip = get_local_ip(host)
-    print(f"[*] 识别到 Win11 网卡 IP: {local_ip}")
-    print(f"[*] 目标路由器默认 IP: {host}")
-
     print("\n请选择您要执行的操作：")
-    print("  [1] 开启 SSH 并永久固化 (获取 Root 权限，自动双模适配常驻)")
-    print("  [2] 撤销 Root 权限并彻底关闭 SSH (清理固化与自启，无痕恢复出厂)")
+    print("  [1] 开启 SSH 并永久固化 (刚恢复出厂未配置时运行，自动双模适配常驻)")
+    print("  [2] 撤销 Root 权限并彻底关闭 SSH (已联网正常运行时运行，无痕恢复出厂)")
     action = input("\n请输入数字 [1 或 2，回车默认 1]: ").strip()
     if not action:
         action = "1"
 
     if action == "1":
+        host = "192.168.31.1"
+        local_ip = get_local_ip(host)
+        print(f"\n[*] 模式: 开启 SSH 并固化")
+        print(f"[*] 目标路由器默认 IP: {host}")
+        print(f"[*] 识别到网卡 IP: {local_ip}")
         do_unlock(host, local_ip)
     elif action == "2":
-        do_revert(host, local_ip)
+        print(f"\n[*] 模式: 撤销 Root 权限并关闭 SSH")
+        custom_host = input("请输入路由器当前的 IP 地址 [直接回车默认: 192.168.31.1]: ").strip()
+        host = custom_host if custom_host else "192.168.31.1"
+        do_revert(host)
     else:
         print(f"[-] 未知选项: {action}")
 
