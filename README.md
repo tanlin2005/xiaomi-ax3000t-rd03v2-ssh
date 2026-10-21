@@ -2,13 +2,13 @@
 
 <p align="center">
   <b>针对小米路由器 AX3000T 高通芯片版（RD03v2）定制开发的原厂固件免拆机 Root / 开启 SSH 及持久化管理利器</b><br>
-  <sub>专为 Windows 11 环境打造 · 纯标准库 0 外部依赖 · 单文件全闭环 · 原厂双模固化 · 完全可逆还原</sub>
+  <sub>全面适配 Windows 11 / Windows 10 · 纯标准库 0 外部依赖 · 单文件全闭环 · 原厂双模固化 · 完全可逆还原</sub>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Hardware-RD03v2%20(Qualcomm%20IPQ5018)-blue?style=flat-square" alt="Hardware">
   <img src="https://img.shields.io/badge/Firmware-MiWiFi%202.0.12%20%7C%202.0.28-brightgreen?style=flat-square" alt="Firmware">
-  <img src="https://img.shields.io/badge/Platform-Windows%2011%20%2F%2010-informational?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/Platform-Windows%2011%20%7C%20Windows%2010-informational?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Dependencies-Python%20Standard%20Library%20Only-orange?style=flat-square" alt="Dependencies">
   <img src="https://img.shields.io/badge/License-GPL--2.0-lightgrey?style=flat-square" alt="License">
 </p>
@@ -30,8 +30,8 @@
   - **一键完全撤销**：不仅能关掉 SSH，还会自动擦除 NVRAM 标记、清理 `/data` 持久化脚本、移除防火墙挂载并**锁定 root 密码**，完全恢复原厂未拆封状态。
 - 📶 **路由 / 中继双模式深度兼容 (Dual-mode Adaptation)**  
   针对小米系统在切换“中继模式 (AP / 桥接)”时会重写防火墙导致自启失效的痛点，创新设计了**“防火墙防覆盖补丁 + Cron 巡视守护”**机制，无论当主路由还是 AP，SSH 都稳固常驻。
-- 🪟 **Windows 11 极致使用体验**  
-  配套定制了专属批处理脚本：
+- 🪟 **全面适配 Windows 11 与 Windows 10**  
+  配套定制了跨版本兼容的专属脚本（PowerShell 原生 `.ps1` + 传统 `.bat` 双入口）：
   - **透明提权提示**：清晰告知 UAC 管理员权限用途，杜绝用户顾虑；
   - **防火墙防拦截**：自动临时放行 8123 端口，解决 Windows 因未联网而将网口判定为“公用网络”导致路由器无法拉取脚本的隐蔽深坑；
   - **退出自动清理**：脚本运行完毕后，即刻注销临时放行规则，不留系统安全隐患。
@@ -44,8 +44,8 @@
 
 ```text
 xiaomi-ax3000t-rd03v2-ssh/
-├── 一键开启SSH与固化.ps1  # Win11 PowerShell 原生入口 (推荐，无字符集乱码，支持管理员自提)
-├── 一键开启SSH与固化.bat  # 传统 CMD 双击入口 (带 UTF-8 BOM 修复)
+├── 一键开启SSH与固化.ps1  # Windows 11 / 10 PowerShell 原生入口 (推荐，无字符集乱码，支持管理员自提)
+├── 一键开启SSH与固化.bat  # Windows 11 / 10 传统 CMD 双击入口 (带 UTF-8 BOM 修复)
 ├── unlock_ax3000t.py      # 核心 Python 脚本 (全功能工具箱：解锁、固化、撤销与还原)
 ├── calc_sn_pwd.py         # 路由器出厂默认 root 密码计算工具 (输入 SN 即可算出默认密码)
 └── README.md              # 项目详细说明文档
@@ -53,27 +53,29 @@ xiaomi-ax3000t-rd03v2-ssh/
 
 ---
 
-## 📋 适用机型与固件版本
+## 📋 适用机型与运行环境
 
-| 硬件参数 | 说明 |
+| 维度 | 适用范围说明 |
 | :--- | :--- |
-| **设备型号** | 小米路由器 AX3000T (**高通版 / V3 / RD03v2**) |
-| **处理器 (SoC)** | Qualcomm IPQ5018 (集成 2.4G Wi-Fi 6) + QCN6122 (5G) + AN8855 |
-| **验证通过固件** | MiWiFi 官方稳定版 **`2.0.12`**、**`2.0.28`** |
-| **注意说明** | 早期联发科版本 (MT7981B) 架构不同，请使用原版已成熟的 openwrt / xmir-patcher 方案，**切勿将本工具与 MTK 工具混用**。 |
+| **设备型号** | 小米路由器 AX3000T (**高通版 / V3 / RD03v2**)<br>*(机身标签标注型号通常为 RD03 或 RD03v2)* |
+| **硬件架构** | CPU: **Qualcomm IPQ5018** (集成 2.4G Wi-Fi 6) + 5G: **QCN6122** + 交换机: **AN8855** |
+| **验证固件** | MiWiFi 官方稳定版 **`2.0.12`**、**`2.0.28`** *(出厂默认固件即在此区间)* |
+| **操作端系统** | **Windows 11** (所有版本) / **Windows 10** (1809 及以上版本推荐，系统自带 OpenSSH)<br>*(Linux / macOS 平台亦可直接以终端命令运行 `python3 unlock_ax3000t.py`)* |
+| **Python 版本** | **Python 3.8 ~ 3.12+** (仅依赖系统原生标准库，无需安装任何 pip 第三方模块) |
+| **冲突警示** | 早期联发科芯片版 (MT7981B) 硬件架构完全不同，请使用原版已成熟的 openwrt / xmir-patcher 方案，**切勿将本工具混用！** |
 
 ---
 
-## 🚀 Windows 11 极速使用指南
+## 🚀 Windows 11 / 10 极速使用指南
 
 ### 第一步：准备工作
-1. 确保电脑已安装 Python 3（可打开 Win11 微软应用商店 Microsoft Store 搜索并一键安装 `Python 3.11` 或 `3.12`）。
+1. 确保电脑已安装 Python 3（可打开 Win11 / Win10 微软应用商店 Microsoft Store 搜索并一键安装 `Python 3.11` 或 `3.12`）。
 2. 将 AX3000T 恢复出厂设置（路由器通电开机后，**长按背部 Reset 键约 8 秒**至指示灯变为黄色闪烁后松开）。
 3. 路由器重启完成后，**切勿打开浏览器做任何配置向导**，保持出厂未配置状态。
 4. 使用网线将电脑网口与路由器的**任意网口直连**。
 
 ### 第二步：运行一键工具
-在 Win11 下支持两种运行方式（任选其一，推荐 **PowerShell** 原生运行）：
+在 Win11 / Win10 下支持两种运行方式（任选其一，推荐 **PowerShell** 原生运行）：
 
 - **方式 A（强烈推荐，针对 PowerShell 终端）：**
   在终端中输入：
@@ -91,11 +93,11 @@ xiaomi-ax3000t-rd03v2-ssh/
          小米 AX3000T 高通版 (RD03v2) 原厂固件 SSH 管理工具箱
             (纯 Python 原生标准库实现 · 免装模块 · 免克隆代码)
    ====================================================================
-   [*] 识别到 Win11 网卡 IP: 192.168.31.xxx
+   [*] 识别到网卡 IP: 192.168.31.xxx
    [*] 目标路由器默认 IP: 192.168.31.1
 
    请选择您要执行的操作：
-     [1] 开启 SSH 并永久固化 (获取 Root 权限，开机自启)
+     [1] 开启 SSH 并永久固化 (获取 Root 权限，自动双模适配常驻)
      [2] 撤销 Root 权限并彻底关闭 SSH (清理固化与自启，无痕恢复出厂)
    ```
 3. **根据向导执行**：
@@ -108,7 +110,7 @@ xiaomi-ax3000t-rd03v2-ssh/
 ### 第三步：验证与后续配置
 * **WiFi 临时密码**：提权完成后，路由器 WiFi 临时连接密码为 **`meshpoc12345`**。
 * **修改 WiFi 与管理密码**：打开浏览器访问 `http://192.168.31.1`，输入出厂默认密码 `admin` 登录，进入【Wi-Fi 设置】即可将 WiFi 名称和密码改成您自己的私人密码（后台 Root/SSH 权限永久常驻不受影响）。
-* **登录 SSH**：打开 Win11 终端（PowerShell 或 CMD），随时畅享 Root 权限：
+* **登录 SSH**：打开系统终端（PowerShell 或 CMD），随时畅享 Root 权限：
   ```powershell
   ssh root@192.168.31.1
   # 密码输入你在脚本中设置的密码 (默认: admin)
