@@ -217,7 +217,8 @@ def leak_admin_stok(host, ident=b"ota0001", timeout=20.0):
 
 # ---- 远程通用自愈与全能固化 Shell 构造 ----
 def build_remote_sh(root_password):
-    safe_pwd = root_password.replace("'", "'\\''")
+    # 严格过滤密码中的危险转义字符，只允许常规字符，避免 Shell 语法注入破坏
+    safe_pwd = root_password.replace("'", "'\\''").replace('"', '\\"').replace('$', '\\$').replace('`', '')
     return f"""#!/bin/sh
 
 # 1. 采用三重方式确保 root 密码设置成功
