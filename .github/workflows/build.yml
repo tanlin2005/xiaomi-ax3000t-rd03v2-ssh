@@ -7,31 +7,41 @@
      build:
        runs-on: ubuntu-latest
        steps:
-         - name: Install Cross Compiler
+         - name: Compile in Ubuntu 18.04 Docker (GCC 7.5)
            run: |
-             sudo apt-get update
-             sudo apt-get install -y gcc-arm-linux-gnueabihf build-essential libncurses-dev bison flex libssl-dev
+             mkdir -p output
+             docker run --rm -v $(pwd):/work -w /work ubuntu:18.04 bash -c '
+               set -e
+               # 1. 更换可用镜像源并安装工具链 (Ubuntu 18.04 自带 GCC 7.5.0)
+               sed -i -e "s/archive.ubuntu.com/mirrors.kernel.org/g" \
+                      -e "s/security.ubuntu.com/mirrors.kernel.org/g" /etc/apt/sources.list
+               apt-get update
+               apt-get install -y gcc-arm-linux-gnueabihf make xz-utils bc bison flex libssl-dev wget
 
-         - name: Download Linux 4.4.60
-           run: |
-             wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.60.tar.xz
-             tar -xf linux-4.4.60.tar.xz
+               # 2. 下载 Linux 4.4.60 源码
+               wget -q https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.60.tar.xz
+               tar -xf linux-4.4.60.tar.xz
+               cd linux-4.4.60
 
-         - name: Compile CIFS & MD4 modules
-           run: |
-             cd linux-4.4.60
-             make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
-             # 开启 CIFS 与 MD4
-             sed -i 's/# CONFIG_CIFS is not set/CONFIG_CIFS=m/' .config
-             sed -i 's/# CONFIG_CRYPTO_MD4 is not set/CONFIG_CRYPTO_MD4=m/' .config
-             make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
-             make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=fs/cifs
-             make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=crypto
+               # 3. 配置架构为 ARM 并开启模块
+               make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
+               ./scripts/config -m CIFS
+               ./scripts/config -m CRYPTO_MD4
+               make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+
+               # 4. 精准编译两个目标模块
+               make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
+               make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- fs/cifs/cifs.ko
+               make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- crypto/md4.ko
+
+               # 5. 输出编译结果
+               cp fs/cifs/cifs.ko /work/output/
+               cp crypto/md4.ko /work/output/
+               ls -lh /work/output/
+             '
 
          - name: Upload Artifacts
            uses: actions/upload-artifact@v4
            with:
              name: cifs-modules-4.4.60-arm
-             path: |
-               linux-4.4.60/fs/cifs/cifs.ko
-               linux-4.4.60/crypto/md4.ko
+             path: output/
