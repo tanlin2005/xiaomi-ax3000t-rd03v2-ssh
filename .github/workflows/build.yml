@@ -1,0 +1,37 @@
+   name: Build CIFS for Linux 4.4.60 ARM
+
+   on:
+     workflow_dispatch:
+
+   jobs:
+     build:
+       runs-on: ubuntu-latest
+       steps:
+         - name: Install Cross Compiler
+           run: |
+             sudo apt-get update
+             sudo apt-get install -y gcc-arm-linux-gnueabihf build-essential libncurses-dev bison flex libssl-dev
+
+         - name: Download Linux 4.4.60
+           run: |
+             wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.4.60.tar.xz
+             tar -xf linux-4.4.60.tar.xz
+
+         - name: Compile CIFS & MD4 modules
+           run: |
+             cd linux-4.4.60
+             make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
+             # 开启 CIFS 与 MD4
+             sed -i 's/# CONFIG_CIFS is not set/CONFIG_CIFS=m/' .config
+             sed -i 's/# CONFIG_CRYPTO_MD4 is not set/CONFIG_CRYPTO_MD4=m/' .config
+             make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_prepare
+             make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=fs/cifs
+             make -j$(nproc) ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- M=crypto
+
+         - name: Upload Artifacts
+           uses: actions/upload-artifact@v4
+           with:
+             name: cifs-modules-4.4.60-arm
+             path: |
+               linux-4.4.60/fs/cifs/cifs.ko
+               linux-4.4.60/crypto/md4.ko
